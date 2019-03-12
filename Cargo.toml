@@ -1,0 +1,8 @@
+[package]
+name = "cursed_tetris"
+version = "0.1.0"
+authors = ["josephbgerber <josephbgerber@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+ncurses = "5.99.0"
