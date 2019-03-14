@@ -1,4 +1,7 @@
 use ncurses::*;
+use rand::thread_rng;
+use rand::seq::SliceRandom;
+use std::{thread, time};
 
 #[derive(Copy, Clone)]
 enum Direction {
@@ -36,48 +39,32 @@ struct Player {
 
 struct Board {
     window: WINDOW,
+    lines_window: WINDOW,
+    level_window: WINDOW,
     data: Vec<Square>,
     player: Player,
+    grab_bag: Vec<Player>,
+    lines: usize,
 }
 
 impl Board {
-    fn new(window: WINDOW) -> Board {
+    fn new(window: WINDOW, lines_window: WINDOW, level_window: WINDOW) -> Board {
         let mut data: Vec<Square> = Vec::new();
-        for i in 0..400 {
-            if i >= 350 {
-                data.push(Square::FULL(Shape::I));
-            } else if i <= 350 && i >= 300 {
-                data.push(Square::FULL(Shape::T));
-            } else {
-                data.push(Square::EMPTY);
-            }
-        }
+        for _ in 0..400 {
+            data.push(Square::EMPTY);
+        } 
 
-        let mut player_data = Vec::new();
-
-        player_data.push(Square::EMPTY);
-        for _ in 1..4 {
-            player_data.push(Square::FULL(Shape::L));
-        }
-        for _ in 4..5 {
-            player_data.push(Square::EMPTY);
-        }
-        for _ in 5..16 {
-            player_data.push(Square::EMPTY);
-        }
-
-        let player = Player {
-            data: player_data,
-            shape: Shape::L,
-            direction: Direction::N,
-            y: 20,
-            x: 5,
-        };
+        let mut grab_bag = Board::make_grab_bag();
+        let player = grab_bag.pop().unwrap();
 
         Board {
             window,
+            lines_window,
+            level_window,
             data,
             player,
+            grab_bag,
+            lines: 0,
         }
     }
 
@@ -87,6 +74,11 @@ impl Board {
 
     fn get_mut(&mut self, y: usize, x: usize) -> &mut Square {
         &mut self.data[y * 10 + x]
+    }
+
+    fn gravity(&self) -> usize{
+        let level = self.lines / 10;
+        ((0.8 - ((level as f64 - 1.0) * 0.007)).powi(level as i32 - 1) * 100.0) as usize
     }
 
     fn draw(&self) {
@@ -148,47 +140,107 @@ impl Board {
         wrefresh(self.window);
     }
 
-    fn check_board(&self) -> bool{
-        //Returns false if game should end
-        for y in 0..21{
+    fn make_piece(map: i32, shape: Shape) -> Player{
+        let mut data = Vec::new();
+        let mut i = 0b1;
+        
+        for _ in 0..16{
+            if i & map != 0{
+                data.push(Square::FULL(shape));
+            } else {
+                data.push(Square::EMPTY);
+            }
+            i <<= 1;
+        }
+
+        Player{
+            data,
+            shape,
+            direction: Direction::N,
+            y: 18,
+            x: 3,
+        }
+
+    }
+
+    fn make_grab_bag() -> Vec<Player>{
+        let mut bag = Vec::new();
+
+        bag.push(Board::make_piece(0b1111_0000, Shape::I));
+        bag.push(Board::make_piece(0b0110_0110, Shape::O));
+        bag.push(Board::make_piece(0b0111_0010, Shape::T));
+        bag.push(Board::make_piece(0b0011_0110, Shape::S));
+        bag.push(Board::make_piece(0b0110_0011, Shape::Z));
+        bag.push(Board::make_piece(0b0111_0001, Shape::J));
+        bag.push(Board::make_piece(0b0111_0100, Shape::L));
+
+        let mut rng = thread_rng();
+        let slice: &mut [Player] = &mut bag;
+        slice.shuffle(&mut rng);
+
+        bag
+    }
+
+    fn get_new_piece(&mut self){
+        if self.grab_bag.len() == 1{
+            self.grab_bag.append(&mut Board::make_grab_bag());
+        }
+        self.player = self.grab_bag.pop().unwrap();
+    }
+
+
+    fn clear_line(&mut self, y:usize){
+        let mut new_data = Vec::new();
+        for _ in 0..10{
+            new_data.push(Square::EMPTY);
+        }
+        for _ in 0..10{
+            self.data.remove(10 * y);
+        }
+        new_data.append(&mut self.data);
+        self.data = new_data;
+    }
+
+    fn draw_score(&self){
+        mvwprintw(self.lines_window, 1, 1, &format!("{:>3}", self.lines));
+        wrefresh(self.lines_window);
+
+        mvwprintw(self.level_window, 1, 1, &format!("{:>3}", self.lines/10));
+        wrefresh(self.level_window);    
+    }
+
+    fn check_lines(& mut self) -> bool{
+        //Returns true if game should continue
+        for y in 0..20{
             for x in 0..10{
                 if let Square::FULL(_) = self.get(y, x){
                     return false;
                 }
             }
         }
-        return true;
-    }
 
-    fn new_piece(&mut self){
-        let mut data = Vec::new();
-        data.push(Square::FULL(Shape::L));
-        for _ in 1..16{
-            data.push(Square::EMPTY);
-        }
-        
-        self.player = Player{
-            data,
-            shape: Shape::L,
-            direction: Direction::N,
-            x:5,
-            y:19
-        }
-    }
-
-    fn dump(&mut self){
-        let p_y = self.player.y;
-        let p_x = self.player.x;
-
-        for y in 0..4{
-            for x in 0..4{
-                if 0 <= (y + p_y) && (y + p_y) <= 39 && 0 <= (x + p_x) && (x + p_x) <= 9 {
-                    if let Square::FULL(_) = self.player.data[(y * 4 + x) as usize] {
-                        *self.get_mut((p_y + y) as usize, (p_x + x) as usize) = self.player.data[(y * 4 + x) as usize];
+        let mut sum = 0;
+        for y in (20..40).rev(){
+            loop{
+                for x in 0..10{
+                    if let Square::FULL(_) = self.get(y, x){
+                        sum += 1;
                     }
+                }
+                if sum == 10{
+                    self.clear_line(y);
+                    self.lines += 1;
+                    sum = 0;
+                } else{
+                    sum=0;
+                    break;
                 }
             }
         }
+
+        self.draw_score();
+
+        return true;
     }
 
     fn collision(&self, new_player: &Player) -> bool {
@@ -216,9 +268,26 @@ impl Board {
         false
     }
 
-    fn move_player(&mut self, direction: Direction) -> bool{
+    fn lock(&mut self){
+        let p_y = self.player.y;
+        let p_x = self.player.x;
+
+        for y in 0..4{
+            for x in 0..4{
+                if 0 <= (y + p_y) && (y + p_y) <= 39 && 0 <= (x + p_x) && (x + p_x) <= 9 {
+                    if let Square::FULL(_) = self.player.data[(y * 4 + x) as usize] {
+                        *self.get_mut((p_y + y) as usize, (p_x + x) as usize) = self.player.data[(y * 4 + x) as usize];
+                    }
+                }
+            }
+        }
+    } 
+
+    fn move_player(&mut self, direction: Direction) -> LockResult{
         let new_player = match direction {
-            Direction::N => self.player.clone(),
+            Direction::N => {
+                self.player.clone()
+            },
             Direction::E => Player {
                 x: self.player.x + 1,
                 ..self.player.clone()
@@ -233,28 +302,100 @@ impl Board {
             },
         };
 
-        if !self.collision(&new_player) {
+        if !self.collision(&new_player){
             self.player = new_player;
+            return LockResult::Unlock
         } else{
             if let Direction::S = direction{
-                self.dump();
-                if self.check_board(){
-                    self.new_piece();
-                    return true;
-                } else {
-                    return false;
-                }
+                return LockResult::Lock;
             }
         }
-        return true;
+        LockResult::NoChange
+    }
+
+    fn hard_drop(&mut self) -> LockResult{
+        loop{
+            let lock = self.move_player(Direction::S);
+            if let LockResult::Lock = lock{
+                break;
+            }
+        }
+        LockResult::Lock
+    }
+
+    fn rotate_player(&mut self, direction: Direction) -> LockResult{
+        let mut rotated_data = self.player.data.clone();
+        let rotated_data = match direction{
+            Direction::E => { 
+                match self.player.shape {
+                    Shape::O => {rotated_data},
+                    Shape::I => {
+                        for y in 0..4{
+                            for x in 0..4{
+                                rotated_data[y * 4 + x] = self.player.data[(3 - x) * 4 + y];
+                            }
+                        }
+                        rotated_data
+                    },
+                    _ => {
+                        for y in 0..3{
+                            for x in 0..3{
+                                rotated_data[y * 4 + x] = self.player.data[(2 - x) * 4 + y];
+                            } 
+                        }
+                        rotated_data
+
+                    }
+                }
+            },
+            Direction::W => { 
+                match self.player.shape {
+                    Shape::O => {rotated_data},
+                    Shape::I => {
+                        for y in 0..4{
+                            for x in 0..4{
+                                rotated_data[y * 4 + x] = self.player.data[x * 4 + (3 - y)];
+                            }
+                        }
+                        rotated_data
+                    },
+                    _ => {
+                        for y in 0..3{
+                            for x in 0..3{
+                                rotated_data[y * 4 + x] = self.player.data[x * 4 + (2 - y)];
+                            } 
+                        }
+                        rotated_data
+
+                    }
+                }
+            },
+            _ => {rotated_data}
+        };
+
+        let rotated_player = Player{data: rotated_data, ..self.player.clone()};
+
+        if !self.collision(&rotated_player){
+            self.player = rotated_player;
+            return LockResult::Unlock;
+        } else {
+            return LockResult::NoChange;
+        }
     }
 }
+
+enum LockResult{
+    Lock, Unlock, NoChange
+}
+
 
 fn main() {
     initscr();
     cbreak();
     noecho();
     keypad(stdscr(), true);
+    nodelay(stdscr(), true);
+    curs_set(CURSOR_VISIBILITY::CURSOR_INVISIBLE);
 
     start_color();
     initialize_color();
@@ -266,22 +407,91 @@ fn main() {
 
     getmaxyx(stdscr(), &mut max_y, &mut max_x);
 
-    let window = newwin(22, 12, (max_y - 22) / 2, (max_x - 12) / 2);
+    let y = (max_y - 22) / 2;
+    let x = (max_x - 12) / 2;
+
+    let window = newwin(22, 12, y, x);
     box_(window, 0, 0);
 
-    let mut board = Board::new(window);
+    mvprintw(y - 2, x + 3, "cursed");
+    refresh();
+
+    mvprintw(y + 2, x + 12 + 2, "LINES");
+    let lines_window = newwin(3, 5, y + 3, x + 12 + 2);
+    box_(lines_window, 0, 0);
+    wrefresh(lines_window);
+
+
+    mvprintw(y + 7, x + 12 + 2, "LEVEL");
+    let level_window = newwin(3, 5, y + 8, x + 12 + 2);
+    box_(level_window, 0, 0);
+    wrefresh(level_window);
+
+
+    let mut board = Board::new(window, lines_window, level_window);
 
     board.draw();
 
+    let ten_millis = time::Duration::from_millis(10);
+    let mut time = 0;
+    let mut lock_time = 0;
+    let mut lock = false;
+
+
     loop {
-        match getch() {
-            KEY_F1 => break,
-            KEY_RIGHT => {board.move_player(Direction::E);},
-            KEY_DOWN => if !board.move_player(Direction::S){break;},
-            KEY_LEFT => {board.move_player(Direction::W);},
-            _ => {}
+        let mut set_lock = match getch() {
+            48 => break, //hold
+            56 => {board.hard_drop()}, //hard drop
+            52 => board.move_player(Direction::W),
+            54 => board.move_player(Direction::E),
+            50 => board.move_player(Direction::S),
+            51|55 => board.rotate_player(Direction::W),
+            49|53|57 => board.rotate_player(Direction::E),
+            _ => {LockResult::NoChange}
+        };
+
+        match set_lock {
+            LockResult::Lock => {
+                lock = true;
+            },
+            LockResult::Unlock => {
+                lock = false;
+                lock_time = 0;
+                time = 0;
+            },
+            LockResult::NoChange => {}
         }
+
+        if time >= board.gravity() && !lock{
+            time = 0;
+            set_lock = board.move_player(Direction::S);
+            if let LockResult::Lock = set_lock{
+                lock_time = 0;
+                lock = true;
+            }
+        }
+
+        if lock {
+            lock_time += 1;
+            if lock_time >= 50{
+                board.lock();
+
+                let cont = board.check_lines();
+                if cont {
+                    board.get_new_piece();
+                    lock = false;
+                    lock_time = 0;
+                    time = 0;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        time += 1;
+
         board.draw();
+        thread::sleep(ten_millis);
     }
 
     endwin();
@@ -290,16 +500,6 @@ fn main() {
 }
 
 fn initialize_color() {
-    //Forces tetris colors on termial, some colors are
-    //different from the name due to limitations
-    init_color(COLOR_CYAN, 0, 1000, 1000);
-    init_color(COLOR_YELLOW, 1000, 1000, 0);
-    init_color(COLOR_MAGENTA, 500, 0, 500);
-    init_color(COLOR_GREEN, 0, 1000, 0);
-    init_color(COLOR_RED, 1000, 0, 0);
-    init_color(COLOR_BLUE, 0, 0, 1000);
-    init_color(COLOR_WHITE, 1000, 500, 0);
-
     init_pair(1, COLOR_CYAN, COLOR_BLACK);
     init_pair(2, COLOR_YELLOW, COLOR_BLACK);
     init_pair(3, COLOR_MAGENTA, COLOR_BLACK);
