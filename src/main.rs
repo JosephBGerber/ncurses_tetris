@@ -289,7 +289,9 @@ impl Board {
 
     fn get_new_piece(&mut self) {
         if self.grab_bag.len() == 1 {
-            self.grab_bag.append(&mut Board::make_grab_bag());
+            let mut new_bag = Board::make_grab_bag();
+            new_bag.append(&mut self.grab_bag);
+            self.grab_bag = new_bag;
         }
         self.player = self.grab_bag.pop().unwrap();
     }
